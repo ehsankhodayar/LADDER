@@ -16,7 +16,7 @@ def hypertune(f: TextIO, rf: TextIO):
 
     arg = argparser.parse_bert_sentence_classification_arguments()
 
-    params_dict = {'model': ['bert-base-uncased'],
+    params_dict = {'pretrained_model': ['roberta-large'],
               'lr':[0.000005],
               'batch_size': [16],
               'epoch': [20],
