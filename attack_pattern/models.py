@@ -1,7 +1,8 @@
 import torch.nn as nn
 import torch
-from transformers.modeling_bert import *
-from transformers.modeling_roberta import *
+from transformers.models.bert.modeling_bert import *
+# from transformers.modeling_roberta import *
+from transformers import RobertaConfig, RobertaModel
 
 from config import *
 
