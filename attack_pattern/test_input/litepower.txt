@@ -107,7 +107,7 @@ We see the same theme being followed in the intrusions discussed in this report.
 
 Even though the latest intrusions are using TCP/443 over HTTPS in C2 communications, the oldest intrusions explored in this report used similar ports to those mentioned in the public post by Lab52, such as TCP 2096 and 2087. In addition, the C2 requests explored here and in the public post have similar PowerShell IEX command execution and sleep functions.
 
-Old C2 request highlighting the status condition, IEX invocation and 60-100 sleep function 
+Old C2 request highlighting the status condition, IEX invocation and 60-100 sleep function
 
 Old C2 request highlighting the status condition, IEX invocation and 60-100 sleep function
 

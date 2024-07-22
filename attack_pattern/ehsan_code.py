@@ -5,6 +5,7 @@ import torch
 
 import nltk
 import pandas as pd
+from scipy import spatial
 
 from config import *
 from inference import extract_sentences, classify_sent, extract_entities
@@ -78,6 +79,61 @@ def convert_string_to_list(string):
     return result_list
 
 
+def get_embedding(txt, embedding_cache, bert_model):
+    if txt in embedding_cache:
+        return embedding_cache[txt]
+    emb = bert_model.encode([txt])[0]
+    embedding_cache[txt] = emb
+    return emb
+
+
+def get_embedding_distance(txt1, txt2, embedding_cache, bert_model):
+    p1 = get_embedding(txt1, embedding_cache, bert_model)
+    p2 = get_embedding(txt2, embedding_cache, bert_model)
+    score = spatial.distance.cosine(p1, p2)
+    return score
+
+
+def get_ttp_id(text, embedding_cache, bert_model, attack_pattern_dict):
+    min_dist = 25
+    ret = None
+    for k, tech_list in attack_pattern_dict.items():
+        for v in tech_list:
+            d = (0.5 * get_embedding_distance(text, v[0], embedding_cache, bert_model) +
+                 0.5 * get_embedding_distance(text, v[1], embedding_cache, bert_model))
+            if d < min_dist:
+                min_dist = d
+                ret = k
+    return ret, min_dist
+
+
+def remove_consec_newline(s):
+    ret = s[0]
+    for x in s[1:]:
+        if not (x == ret[-1] and ret[-1]=='\n'):
+            ret += x
+    return ret
+
+
+def get_all_attack_patterns(attack_pattern, embedding_cache, bert_model, attack_pattern_dict, th=0.6):
+    mapped = {}
+
+    attack_pattern = remove_consec_newline(attack_pattern)
+    attack_pattern = attack_pattern.replace('\t', ' ')
+    attack_pattern = attack_pattern.replace("\'", "'")
+
+    if len(attack_pattern) > 0:
+        _id, dist = get_ttp_id(attack_pattern, embedding_cache, bert_model, attack_pattern_dict)
+        if dist < th:
+            if _id not in mapped:
+                mapped[_id] = dist, line
+            else:
+                if dist < mapped[_id][0]:
+                    mapped[_id] = mapped[_id] = dist, line
+
+    return mapped
+
+
 def extract_dataset_ttps(dataset_path,
                          destination_path,
                          text_col,
@@ -93,7 +149,7 @@ def extract_dataset_ttps(dataset_path,
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     entity_model = EntityRecognition(entity_extraction_model).to(device)
-    entity_model.load_state_dict(torch.load(entity_extraction_weight, map_location=device))
+    entity_model.load_state_dict(torch.load(entity_extraction_weight, map_location=device), strict=False)
 
     sequence_length_sentence = 256
     sequence_length_entity = 256
@@ -103,7 +159,7 @@ def extract_dataset_ttps(dataset_path,
         sentence_model.load_state_dict(torch.load(sentence_classification_weight, map_location=device))
     elif MODELS[sentence_classification_model][3] == 'roberta':
         sentence_model = SentenceClassificationRoBERTa(sentence_classification_model, num_class=2).to(device)
-        sentence_model.load_state_dict(torch.load(sentence_classification_weight, map_location=device))
+        sentence_model.load_state_dict(torch.load(sentence_classification_weight, map_location=device), strict=False)
     else:
         raise ValueError('Unknown sentence classification model')
 

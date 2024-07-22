@@ -1,4 +1,5 @@
-from transformers.modeling_bert import *
+# from transformers.modeling_bert import *
+from transformers.models.bert.modeling_bert import *
 from transformers import RobertaConfig, RobertaModel
 
 from config import *
@@ -137,7 +138,7 @@ class MyRoBerta(BertPreTrainedModel):
 class SentenceClassificationRoBERTa(nn.Module):
     def __init__(self, pretrained_model, num_class=2, fine_tune=True):
         super(SentenceClassificationRoBERTa, self).__init__()
-        self.bert = MyRoBerta.from_pretrained(pretrained_model)
+        self.bert = MyRoBerta.from_pretrained(pretrained_model, attn_implementation="eager")
         # Freeze bert layers
         if not fine_tune:
             for p in self.bert.parameters():
