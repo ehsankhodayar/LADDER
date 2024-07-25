@@ -1,4 +1,8 @@
+import csv
 import json
+import os
+import time
+from pathlib import Path
 
 import fire
 import torch
@@ -6,6 +10,7 @@ import torch
 import nltk
 import pandas as pd
 from scipy import spatial
+from sentence_transformers import SentenceTransformer
 
 from config import *
 from inference import extract_sentences, classify_sent, extract_entities
@@ -21,6 +26,19 @@ def load_csv_file(csv_file):
     df = pd.read_csv(csv_file)
 
     return df
+
+
+def save_csv_file(csv_file_path, data):
+    # Open the file in write mode
+    with open(csv_file_path, mode='a', newline='', encoding="utf-8") as file:
+        # Create a writer object
+        writer = csv.writer(file)
+
+        for row in data:
+            # Write the data to the file
+            writer.writerow(row)
+
+        file.close()
 
 
 def load_json_file(json_file):
@@ -94,57 +112,87 @@ def get_embedding_distance(txt1, txt2, embedding_cache, bert_model):
     return score
 
 
-def get_ttp_id(text, embedding_cache, bert_model, attack_pattern_dict):
+def get_relevant_ttp_ids(attack_pattern, embedding_cache, th, bert_model, ttps_dict):
+    ttps_below_threshold = {}
     min_dist = 25
-    ret = None
-    for k, tech_list in attack_pattern_dict.items():
+    ttp_id_min = None
+    for id, tech_list in ttps_dict.items():
         for v in tech_list:
-            d = (0.5 * get_embedding_distance(text, v[0], embedding_cache, bert_model) +
-                 0.5 * get_embedding_distance(text, v[1], embedding_cache, bert_model))
+            d = (0.5 * get_embedding_distance(attack_pattern, v[0], embedding_cache, bert_model) +
+                 0.5 * get_embedding_distance(attack_pattern, v[1], embedding_cache, bert_model))
+
+            if d < th:
+                if id in ttps_below_threshold:
+                    if d < ttps_below_threshold[id]:
+                        ttps_below_threshold[id] = d
+                else:
+                    ttps_below_threshold[id] = d
+
             if d < min_dist:
                 min_dist = d
-                ret = k
-    return ret, min_dist
+                ttp_id_min = id
+
+    if min_dist >= th:
+        closest_ttp = None
+    else:
+        closest_ttp = {ttp_id_min: min_dist}
+
+    return {"ttps_below_threshold": ttps_below_threshold, "closest_ttp": closest_ttp}
 
 
 def remove_consec_newline(s):
     ret = s[0]
     for x in s[1:]:
-        if not (x == ret[-1] and ret[-1]=='\n'):
+        if not (x == ret[-1] and ret[-1] == '\n'):
             ret += x
     return ret
 
 
-def get_all_attack_patterns(attack_pattern, embedding_cache, bert_model, attack_pattern_dict, th=0.6):
-    mapped = {}
+def load_ttps_dictionary():
+    df = pd.read_csv('data/enterprise_techniques_customized.csv')
 
+    ttps_dict = {}
+
+    prev_id = None
+
+    for _, row in df.iterrows():
+        _id = row['ID']
+        if not pd.isnull(_id):
+            ttps_dict[_id] = [[row['Name'], row['Description']]]
+            prev_id = _id
+        else:
+            ttps_dict[prev_id].append([row['Name'], row['Description']])
+
+    return ttps_dict
+
+
+def get_all_ttps(attack_pattern, embedding_cache, bert_model, ttps_dictionary, th=0.6):
     attack_pattern = remove_consec_newline(attack_pattern)
     attack_pattern = attack_pattern.replace('\t', ' ')
     attack_pattern = attack_pattern.replace("\'", "'")
 
     if len(attack_pattern) > 0:
-        _id, dist = get_ttp_id(attack_pattern, embedding_cache, bert_model, attack_pattern_dict)
-        if dist < th:
-            if _id not in mapped:
-                mapped[_id] = dist, line
-            else:
-                if dist < mapped[_id][0]:
-                    mapped[_id] = mapped[_id] = dist, line
+        return get_relevant_ttp_ids(attack_pattern, embedding_cache, th, bert_model, ttps_dictionary)
 
-    return mapped
+    return {}
 
 
 def extract_dataset_ttps(dataset_path,
-                         destination_path,
                          text_col,
                          label_col,
+                         destination_dir,
                          entity_extraction_weight,
-                         sentence_classification_weight):
+                         sentence_classification_weight,
+                         distance_threshold,
+                         continue_prediction=True):
     nltk.download('punkt')
     nltk.download('averaged_perceptron_tagger')
 
+    ttps_dictionary = load_ttps_dictionary()
+
     entity_extraction_model = 'roberta-large'
     sentence_classification_model = 'roberta-large'
+    bert_model = SentenceTransformer('all-mpnet-base-v2')
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -175,12 +223,38 @@ def extract_dataset_ttps(dataset_path,
 
     data = pd.read_csv(dataset_path)
 
+    # Set the destination file path
+    ladder_dataset_path = os.path.join(destination_dir, 'ladder_prediction_results.csv')
+
+    # Continue from previous covered CVEs
+    last_data_point_index = None
+    if continue_prediction and Path(ladder_dataset_path).is_file():
+        covered_cve_dataset = pd.read_csv(ladder_dataset_path)
+        try:
+            last_data_point_index = covered_cve_dataset.index[-1]
+        except:
+            last_data_point_index = None
+
+    # Save Header
+    if not Path(ladder_dataset_path).is_file():
+        save_csv_file(ladder_dataset_path, [['text_column',
+                                             'label_column',
+                                             'Ladder_Predictions',
+                                             'Ladder_Delays',
+                                             'No_Prediction']])
+
+    embedding_cache = {}
     for index, row in data.iterrows():
-        text = row.iloc[text_col]
-        labels = convert_string_to_list(row.iloc[label_col])
+        cve_desc = row[text_col]
+        cve_labels = row[label_col]
+
+        if continue_prediction and last_data_point_index:
+            if index <= last_data_point_index:
+                continue
 
         # Extract attack patterns from the target text
-        attack_patterns = extract_attack_patterns(text,
+        start_time = time.time()
+        attack_patterns = extract_attack_patterns(cve_desc,
                                                   sentence_model,
                                                   entity_model,
                                                   tokenizer_sen,
@@ -191,8 +265,41 @@ def extract_dataset_ttps(dataset_path,
                                                   sequence_len_ent,
                                                   device)
 
-        for ap in attack_patterns:
-            print(f'CVE {index}: {ap}')
+        # Find the corresponding TTPs to each attack pattern
+        mapping_result = []
+        no_prediction = True
+        for attack_pattern in attack_patterns:
+            relevant_ttps = get_all_ttps(attack_pattern, embedding_cache, bert_model, ttps_dictionary,
+                                         distance_threshold)
+            closest_ttp = relevant_ttps['closest_ttp']
+            ttps_below_threshold = relevant_ttps['ttps_below_threshold']
+
+            mapping_result.append({'attack_pattern': attack_pattern,
+                                   'closest_ttp': closest_ttp,
+                                   'ttps_below_threshold': ttps_below_threshold})
+
+            if closest_ttp is not None:
+                no_prediction = False
+
+        # Save the prediction results
+        delay = time.time() - start_time
+        data_list = [[cve_desc, cve_labels, str(mapping_result), delay, no_prediction]]
+        save_csv_file(ladder_dataset_path, data_list)
+
+        print(f'Ladder predictions for Text: {index}')
+        if no_prediction:
+            print('Empty')
+        else:
+            for index, result in enumerate(mapping_result):
+                attack_pattern = result['attack_pattern']
+                closest_ttp = result['closest_ttp']
+                ttps_below_threshold = result['ttps_below_threshold']
+                ap_id = index + 1
+                print(f'\tAttack Pattern {ap_id}: {attack_pattern} -> {closest_ttp}')
+                print('\tClosest TTPs:')
+                for key, value in ttps_below_threshold.items():
+                    print(f'\t\t{key}: {value}')
+        print(f"--- {delay:.2f} seconds ---\n")
 
 
 fire.Fire(extract_dataset_ttps)
