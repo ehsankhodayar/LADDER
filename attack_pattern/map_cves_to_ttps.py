@@ -1,3 +1,4 @@
+import ast
 import csv
 import json
 import os
@@ -302,4 +303,47 @@ def extract_dataset_ttps(dataset_path,
         print(f"--- {delay:.2f} seconds ---\n")
 
 
-fire.Fire(extract_dataset_ttps)
+def add_prediction_columns(ladder_dataset_path, destination_dir, ladder_col):
+    df = pd.read_csv(ladder_dataset_path)
+    prediction_list1 = []  # Closest TTP to each attack pattern
+    prediction_list2 = []  # TTPs below the threshold
+    prediction_list1_col_index = df.columns.get_loc(ladder_col) + 1
+    prediction_list2_col_index = prediction_list1_col_index + 1
+
+    for index, row in df.iterrows():
+        ladder_predictions = row[ladder_col]
+        ladder_predictions = ast.literal_eval(ladder_predictions)
+        closest_ttps_general = []
+        ttps_below_threshold_general = []
+
+        for prediction in ladder_predictions:
+            if prediction:
+                try:
+                    attack_pattern_closest_ttps = list(prediction['closest_ttp'].keys())
+                    for ttp in attack_pattern_closest_ttps:
+                        if ttp not in closest_ttps_general:
+                            closest_ttps_general.append(ttp)
+                except:
+                    pass
+
+                try:
+                    attack_pattern_closest_ttps_below_threshold = list(prediction['ttps_below_threshold'].keys())
+                    for ttp in attack_pattern_closest_ttps_below_threshold:
+                        if ttp not in ttps_below_threshold_general:
+                            ttps_below_threshold_general.append(ttp)
+                except:
+                    pass
+
+        prediction_list1.append(closest_ttps_general)
+        prediction_list2.append(ttps_below_threshold_general)
+
+    df.insert(loc=prediction_list1_col_index, column='closest_ttp', value=prediction_list1)
+    df.insert(loc=prediction_list2_col_index, column='ttps_below_threshold', value=prediction_list2)
+
+    df.to_csv(os.path.join(destination_dir, 'ladder_prediction_results_new_columns.csv'), index=False)
+
+
+fire.Fire({
+    'extract_dataset_ttps': extract_dataset_ttps,
+    'add_prediction_columns': add_prediction_columns
+})
