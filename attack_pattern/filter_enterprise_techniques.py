@@ -50,7 +50,11 @@ def filter_enterprise_techniques(default_dataset, destination_dir, filter_techni
 
                 print(f'Technique ID: {uncovered_ttp} updated successfully!')
             else:
-                raise Exception("Invalid Technique Name or Description!")
+                technique_ids.append(uncovered_ttp)
+                technique_names.append('')
+                technique_descriptions.append('')
+
+                print(f'Technique ID: {uncovered_ttp} added without name and description.')
 
         # Save the new enterprise technique dataset
         df_new = pd.DataFrame({
