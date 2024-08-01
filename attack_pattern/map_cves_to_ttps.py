@@ -150,7 +150,9 @@ def remove_consec_newline(s):
 
 
 def load_ttps_dictionary():
-    df = pd.read_csv('data/enterprise_techniques_customized.csv')
+    # Example: 'data/enterprise_techniques_customized.csv'
+    dictionary_path = input("Enter the path to the enterprise techniques dictionary: ")
+    df = pd.read_csv(dictionary_path)
 
     ttps_dict = {}
 
