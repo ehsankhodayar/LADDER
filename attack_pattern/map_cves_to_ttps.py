@@ -186,6 +186,7 @@ def extract_dataset_ttps(dataset_path,
                          sentence_classification_weight,
                          distance_threshold,
                          continue_prediction=True):
+    # Example: python map_cves_to_ttps.py extract_dataset_ttps --dataset_path "dataset_path" --text_col "cve_description" --label_col "labels" --destination_dir "destination_dir" --entity_extraction_weight "models/entity_ext.pt" --sentence_classification_weight "models/sent_cls.pt" --distance_threshold "0.6"
     nltk.download('punkt')
     nltk.download('averaged_perceptron_tagger')
 
@@ -304,6 +305,7 @@ def extract_dataset_ttps(dataset_path,
 
 
 def add_prediction_columns(ladder_dataset_path, destination_dir, ladder_col):
+    # Example: python .\map_cves_to_ttps.py add_prediction_columns --ladder_dataset_path "ladder_dataset_path" --destination_dir "destination_dir" --ladder_col "Ladder_Predictions"
     df = pd.read_csv(ladder_dataset_path)
     prediction_list1 = []  # Closest TTP to each attack pattern
     prediction_list2 = []  # TTPs below the threshold
