@@ -305,6 +305,8 @@ def extract_dataset_ttps(dataset_path,
                     print(f'\t\t{key}: {value}')
         print(f"--- {delay:.2f} seconds ---\n")
 
+    add_prediction_columns(ladder_dataset_path, destination_dir, "Ladder_Predictions")
+
 
 def add_prediction_columns(ladder_dataset_path, destination_dir, ladder_col):
     # Example: python .\map_cves_to_ttps.py add_prediction_columns --ladder_dataset_path "ladder_dataset_path" --destination_dir "destination_dir" --ladder_col "Ladder_Predictions"

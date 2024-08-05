@@ -138,15 +138,15 @@ def infer():
     # print(device)
     
     entity_model = EntityRecognition(args.entity_extraction_model).to(device)
-    entity_model.load_state_dict(torch.load(args.entity_extraction_weight, map_location=device))
+    entity_model.load_state_dict(torch.load(args.entity_extraction_weight, map_location=device), strict=False)
 
 
     if MODELS[args.sentence_classification_model][3] == 'bert':
         sentence_model = SentenceClassificationBERT(args.sentence_classification_model, num_class=2).to(device)
-        sentence_model.load_state_dict(torch.load(args.sentence_classification_weight, map_location=device))
+        sentence_model.load_state_dict(torch.load(args.sentence_classification_weight, map_location=device), strict=False)
     elif MODELS[args.sentence_classification_model][3] == 'roberta':
         sentence_model = SentenceClassificationRoBERTa(args.sentence_classification_model, num_class=2).to(device)
-        sentence_model.load_state_dict(torch.load(args.sentence_classification_weight, map_location=device))
+        sentence_model.load_state_dict(torch.load(args.sentence_classification_weight, map_location=device), strict=False)
     else:
         raise ValueError('Unknown sentence classification model')
 
