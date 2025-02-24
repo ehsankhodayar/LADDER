@@ -149,7 +149,7 @@ def remove_consec_newline(s):
     return ret
 
 
-def load_ttps_dictionary():
+def load_ttps_dictionary(dataset_supported_ttps: list = None):
     # Example: 'data/mitre_attack_technique_dataset.csv'
     # dictionary_path = input("Enter the path to the enterprise techniques dictionary: ")
     dictionary_path = get_absolute_file_path("./data/mitre_attack_technique_dataset.csv")
@@ -157,15 +157,12 @@ def load_ttps_dictionary():
 
     ttps_dict = {}
 
-    prev_id = None
+    for index, row in df.iterrows():
+        if dataset_supported_ttps:
+            if row['ID'] not in dataset_supported_ttps:
+                continue
 
-    for _, row in df.iterrows():
-        _id = row['ID']
-        if not pd.isnull(_id):
-            ttps_dict[_id] = [[row['Name'], row['Description']]]
-            prev_id = _id
-        else:
-            ttps_dict[prev_id].append([row['Name'], row['Description']])
+        ttps_dict[row['ID']] = [[row['Name'], row['Description']]]
 
     return ttps_dict
 
@@ -193,9 +190,6 @@ def annotate_dataset_with_Ladder(dataset_path,
     # Example: python .\map_cves_to_ttps.py annotate_dataset_with_Ladder --dataset_path ".\data\nexus_comparison_test_dataset_2\nexus_test.csv" --text_col "CVE_Description" --ground_truth_col "Adjusted_Labels_Whole_Report" --destination_dir ".\data\nexus_comparison_test_dataset_2\ladder_predictions\" -entity_extraction_weight "models/entity_ext.pt" --sentence_classification_weight "models/sent_cls.pt" --distance_threshold "0.6" --ignore_predictions_not_supported_by_ground_truth "True"
     nltk.download('punkt')
     nltk.download('averaged_perceptron_tagger')
-
-    ttps_dictionary = load_ttps_dictionary()
-    ladder_supported_ttps = ttps_dictionary.keys()
 
     entity_extraction_model = 'roberta-large'
     sentence_classification_model = 'roberta-large'
@@ -240,9 +234,17 @@ def annotate_dataset_with_Ladder(dataset_path,
             if ttp not in dataset_total_labels:
                 dataset_total_labels.append(ttp)
 
-                if ttp not in ladder_supported_ttps:
-                    # print(f"{ttp} does not exit in Ladder's TTP Dictionary")
-                    raise Exception(f"{ttp} does not exit in Ladder's TTP Dictionary")
+    if ignore_predictions_not_supported_by_ground_truth:
+        ttps_dictionary = load_ttps_dictionary(dataset_total_labels)
+    else:
+        ttps_dictionary = load_ttps_dictionary()
+
+    ladder_supported_ttps = ttps_dictionary.keys()
+
+    for ttp in dataset_total_labels:
+        if ttp not in ladder_supported_ttps:
+            # print(f"{ttp} does not exit in Ladder's TTP Dictionary")
+            raise Exception(f"{ttp} does not exit in Ladder's TTP Dictionary")
 
     # Set the destination file path
     ladder_dataset_path = os.path.join(destination_dir, 'ladder_prediction_results.csv')
@@ -293,7 +295,6 @@ def annotate_dataset_with_Ladder(dataset_path,
         # Find the corresponding TTPs to each attack pattern
         ap_list = []
         ttps_below_threshold_list = []
-        unique_predicted_ttps = []
 
         for attack_pattern in attack_patterns:
             relevant_ttps = get_all_ttps(attack_pattern, embedding_cache, bert_model, ttps_dictionary,
@@ -305,16 +306,7 @@ def annotate_dataset_with_Ladder(dataset_path,
                     ttps_below_threshold_list.append(ttp)
 
         row['Attack_Patterns'] = str(ap_list)
-
-        if ignore_predictions_not_supported_by_ground_truth:
-            for predicted_ttp in ttps_below_threshold_list:
-                if predicted_ttp in dataset_total_labels:
-                    if predicted_ttp not in unique_predicted_ttps:
-                        unique_predicted_ttps.append(predicted_ttp)
-        else:
-            unique_predicted_ttps = ttps_below_threshold_list
-
-        row['Ladder_predictions'] = str(unique_predicted_ttps)
+        row['Ladder_predictions'] = str(ttps_below_threshold_list)
 
         # Save the prediction results
         data_list = [row.tolist()]
