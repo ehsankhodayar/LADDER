@@ -2,14 +2,14 @@ import ast
 import csv
 import json
 import os
-import time
+import pathlib
+import platform
 from pathlib import Path
 
 import fire
-import torch
-
 import nltk
 import pandas as pd
+import torch
 from scipy import spatial
 from sentence_transformers import SentenceTransformer
 
@@ -150,8 +150,9 @@ def remove_consec_newline(s):
 
 
 def load_ttps_dictionary():
-    # Example: 'data/enterprise_techniques_customized.csv'
-    dictionary_path = input("Enter the path to the enterprise techniques dictionary: ")
+    # Example: 'data/mitre_attack_technique_dataset.csv'
+    # dictionary_path = input("Enter the path to the enterprise techniques dictionary: ")
+    dictionary_path = get_absolute_file_path("./data/mitre_attack_technique_dataset.csv")
     df = pd.read_csv(dictionary_path)
 
     ttps_dict = {}
@@ -180,19 +181,21 @@ def get_all_ttps(attack_pattern, embedding_cache, bert_model, ttps_dictionary, t
     return {}
 
 
-def extract_dataset_ttps(dataset_path,
-                         text_col,
-                         label_col,
-                         destination_dir,
-                         entity_extraction_weight,
-                         sentence_classification_weight,
-                         distance_threshold,
-                         continue_prediction=True):
-    # Example: python map_cves_to_ttps.py extract_dataset_ttps --dataset_path "dataset_path" --text_col "cve_description" --label_col "labels" --destination_dir "destination_dir" --entity_extraction_weight "models/entity_ext.pt" --sentence_classification_weight "models/sent_cls.pt" --distance_threshold "0.6"
+def annotate_dataset_with_Ladder(dataset_path,
+                                 text_col,
+                                 ground_truth_col,
+                                 ignore_predictions_not_supported_by_ground_truth: bool,
+                                 destination_dir,
+                                 entity_extraction_weight,
+                                 sentence_classification_weight,
+                                 distance_threshold,
+                                 continue_prediction=True):
+    # Example: python .\map_cves_to_ttps.py annotate_dataset_with_Ladder --dataset_path ".\data\nexus_comparison_test_dataset_2\nexus_test.csv" --text_col "CVE_Description" --ground_truth_col "Adjusted_Labels_Whole_Report" --destination_dir ".\data\nexus_comparison_test_dataset_2\ladder_predictions\" -entity_extraction_weight "models/entity_ext.pt" --sentence_classification_weight "models/sent_cls.pt" --distance_threshold "0.6" --ignore_predictions_not_supported_by_ground_truth "True"
     nltk.download('punkt')
     nltk.download('averaged_perceptron_tagger')
 
     ttps_dictionary = load_ttps_dictionary()
+    ladder_supported_ttps = ttps_dictionary.keys()
 
     entity_extraction_model = 'roberta-large'
     sentence_classification_model = 'roberta-large'
@@ -225,7 +228,21 @@ def extract_dataset_ttps(dataset_path,
     tokenizer_ent = tokenizer_ent.from_pretrained(entity_extraction_model)
     sequence_len_ent = sequence_length_entity
 
-    data = pd.read_csv(dataset_path)
+    dataset_df = pd.read_csv(dataset_path)
+    current_dataset_header = dataset_df.columns.tolist()
+    dataset_ground_truth_col = dataset_df[ground_truth_col].tolist()
+    dataset_total_labels = []
+
+    for ttp_list in dataset_ground_truth_col:
+        ttp_list = ast.literal_eval(ttp_list)
+
+        for ttp in ttp_list:
+            if ttp not in dataset_total_labels:
+                dataset_total_labels.append(ttp)
+
+                if ttp not in ladder_supported_ttps:
+                    # print(f"{ttp} does not exit in Ladder's TTP Dictionary")
+                    raise Exception(f"{ttp} does not exit in Ladder's TTP Dictionary")
 
     # Set the destination file path
     ladder_dataset_path = os.path.join(destination_dir, 'ladder_prediction_results.csv')
@@ -234,30 +251,34 @@ def extract_dataset_ttps(dataset_path,
     last_data_point_index = None
     if continue_prediction and Path(ladder_dataset_path).is_file():
         covered_cve_dataset = pd.read_csv(ladder_dataset_path)
-        try:
-            last_data_point_index = covered_cve_dataset.index[-1]
-        except:
-            last_data_point_index = None
+        covered_report_ids = list(covered_cve_dataset.iloc[:, 0])
 
-    # Save Header
-    if not Path(ladder_dataset_path).is_file():
-        save_csv_file(ladder_dataset_path, [['text_column',
-                                             'label_column',
-                                             'Ladder_Predictions',
-                                             'Ladder_Delays',
-                                             'No_Prediction']])
+        if covered_report_ids:
+            print(f"The latest processed report ID was: {covered_report_ids[-1]}")
+
+    # Define Header
+    extended_dataset_header = ['Attack_Patterns', 'Ladder_predictions']
+    current_dataset_header.extend(extended_dataset_header)
+    extended_dataset_header = current_dataset_header
+
+    # Create a new dataset
+    new_dataset_df, covered_report_ids = (
+        create_new_csv_dataset(destination_path=ladder_dataset_path,
+                               headers=extended_dataset_header,
+                               overwrite=not continue_prediction))
 
     embedding_cache = {}
-    for index, row in data.iterrows():
-        cve_desc = row[text_col]
-        cve_labels = row[label_col]
+    for index, row in dataset_df.iterrows():
+        remained_reports = f'{index + 1}/{len(dataset_df)}'
+        print(f'\rProcessing  Report {remained_reports} ',
+              sep='', end='', flush=True)
 
-        if continue_prediction and last_data_point_index:
-            if index <= last_data_point_index:
+        if continue_prediction and covered_report_ids:
+            if row[0] in covered_report_ids:
                 continue
 
         # Extract attack patterns from the target text
-        start_time = time.time()
+        cve_desc = row[text_col]
         attack_patterns = extract_attack_patterns(cve_desc,
                                                   sentence_model,
                                                   entity_model,
@@ -270,86 +291,96 @@ def extract_dataset_ttps(dataset_path,
                                                   device)
 
         # Find the corresponding TTPs to each attack pattern
-        mapping_result = []
-        no_prediction = True
+        ap_list = []
+        ttps_below_threshold_list = []
+        unique_predicted_ttps = []
+
         for attack_pattern in attack_patterns:
             relevant_ttps = get_all_ttps(attack_pattern, embedding_cache, bert_model, ttps_dictionary,
                                          distance_threshold)
-            closest_ttp = relevant_ttps['closest_ttp']
-            ttps_below_threshold = relevant_ttps['ttps_below_threshold']
+            ap_list.append(attack_pattern)
+            attack_pattern_closest_ttps_below_threshold = list(relevant_ttps['ttps_below_threshold'].keys())
+            for ttp in attack_pattern_closest_ttps_below_threshold:
+                if ttp not in ttps_below_threshold_list:
+                    ttps_below_threshold_list.append(ttp)
 
-            mapping_result.append({'attack_pattern': attack_pattern,
-                                   'closest_ttp': closest_ttp,
-                                   'ttps_below_threshold': ttps_below_threshold})
+        row['Attack_Patterns'] = str(ap_list)
 
-            if closest_ttp is not None:
-                no_prediction = False
+        if ignore_predictions_not_supported_by_ground_truth:
+            for predicted_ttp in ttps_below_threshold_list:
+                if predicted_ttp in dataset_total_labels:
+                    if predicted_ttp not in unique_predicted_ttps:
+                        unique_predicted_ttps.append(predicted_ttp)
+        else:
+            unique_predicted_ttps = ttps_below_threshold_list
+
+        row['Ladder_predictions'] = str(unique_predicted_ttps)
 
         # Save the prediction results
-        delay = time.time() - start_time
-        data_list = [[cve_desc, cve_labels, str(mapping_result), delay, no_prediction]]
+        data_list = [row.tolist()]
         save_csv_file(ladder_dataset_path, data_list)
 
-        print(f'Ladder predictions for Text: {index}')
-        if no_prediction:
-            print('Empty')
-        else:
-            for index, result in enumerate(mapping_result):
-                attack_pattern = result['attack_pattern']
-                closest_ttp = result['closest_ttp']
-                ttps_below_threshold = result['ttps_below_threshold']
-                ap_id = index + 1
-                print(f'\tAttack Pattern {ap_id}: {attack_pattern} -> {closest_ttp}')
-                print('\tClosest TTPs:')
-                for key, value in ttps_below_threshold.items():
-                    print(f'\t\t{key}: {value}')
-        print(f"--- {delay:.2f} seconds ---\n")
 
-    add_prediction_columns(ladder_dataset_path, destination_dir, "Ladder_Predictions")
+def create_directory(dir_path):
+    try:
+        dir_path = get_absolute_file_path(dir_path)
+
+        # Create the directory
+        os.makedirs(dir_path, exist_ok=True)
+
+        return dir_path
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 
-def add_prediction_columns(ladder_dataset_path, destination_dir, ladder_col):
-    # Example: python .\map_cves_to_ttps.py add_prediction_columns --ladder_dataset_path "ladder_dataset_path" --destination_dir "destination_dir" --ladder_col "Ladder_Predictions"
-    df = pd.read_csv(ladder_dataset_path)
-    prediction_list1 = []  # Closest TTP to each attack pattern
-    prediction_list2 = []  # TTPs below the threshold
-    prediction_list1_col_index = df.columns.get_loc(ladder_col) + 1
-    prediction_list2_col_index = prediction_list1_col_index + 1
+def get_absolute_file_path(file) -> os.path:
+    # Set PosixPath
+    sys_platform = platform.system()
+    if sys_platform == 'Linux':
+        pathlib.PosixPath = pathlib.PosixPath
+    else:
+        pathlib.PosixPath = pathlib.WindowsPath
 
-    for index, row in df.iterrows():
-        ladder_predictions = row[ladder_col]
-        ladder_predictions = ast.literal_eval(ladder_predictions)
-        closest_ttps_general = []
-        ttps_below_threshold_general = []
+    # Normalize the path
+    file = os.path.normpath(file)
 
-        for prediction in ladder_predictions:
-            if prediction:
-                try:
-                    attack_pattern_closest_ttps = list(prediction['closest_ttp'].keys())
-                    for ttp in attack_pattern_closest_ttps:
-                        if ttp not in closest_ttps_general:
-                            closest_ttps_general.append(ttp)
-                except:
-                    pass
+    # Get the absolute path to the project's root directory
+    project_root = get_project_root()
 
-                try:
-                    attack_pattern_closest_ttps_below_threshold = list(prediction['ttps_below_threshold'].keys())
-                    for ttp in attack_pattern_closest_ttps_below_threshold:
-                        if ttp not in ttps_below_threshold_general:
-                            ttps_below_threshold_general.append(ttp)
-                except:
-                    pass
+    return os.path.join(project_root, file)
 
-        prediction_list1.append(closest_ttps_general)
-        prediction_list2.append(ttps_below_threshold_general)
 
-    df.insert(loc=prediction_list1_col_index, column='closest_ttp', value=prediction_list1)
-    df.insert(loc=prediction_list2_col_index, column='ttps_below_threshold', value=prediction_list2)
+def get_project_root() -> Path:
+    return os.path.dirname(os.path.abspath(__file__))
 
-    df.to_csv(os.path.join(destination_dir, 'ladder_prediction_results_new_columns.csv'), index=False)
+
+def create_new_csv_dataset(destination_path: os.path, headers: list, data_list=None, overwrite: bool = False):
+    if data_list is None:
+        data_list = []
+    covered_ids = []
+    if not overwrite and Path(destination_path).is_file():
+        print(f"The dataset already exist in {destination_path} and wont be overwritten.")
+
+        new_dataset = pd.read_csv(destination_path)
+        covered_ids = list(new_dataset.iloc[:, 0])
+
+        return new_dataset, covered_ids
+    else:
+        if Path(destination_path).is_file():
+            print("\nWARNING: A dataset already exist in {destination_path}")
+            remove_dataset = input("Do you want to remove it? (Yes)")
+
+            if remove_dataset:
+                os.remove(destination_path)
+                print(f"\nThe file {destination_path} has been removed successfully.")
+
+        new_dataset = pd.DataFrame(data_list, columns=headers)
+        new_dataset.to_csv(destination_path, index=False)
+        print(f"\nA new dataset has been created in {destination_path}.")
+
+        return new_dataset, covered_ids
 
 
 fire.Fire({
-    'extract_dataset_ttps': extract_dataset_ttps,
-    'add_prediction_columns': add_prediction_columns
+    'annotate_dataset_with_Ladder': annotate_dataset_with_Ladder
 })
