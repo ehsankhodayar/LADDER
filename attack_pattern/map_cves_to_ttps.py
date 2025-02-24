@@ -181,13 +181,14 @@ def get_all_ttps(attack_pattern, embedding_cache, bert_model, ttps_dictionary, t
 def annotate_dataset_with_Ladder(dataset_path,
                                  text_col,
                                  ground_truth_col,
+                                 ignore_unsupported_labels: bool,
                                  ignore_predictions_not_supported_by_ground_truth: bool,
                                  destination_dir,
                                  entity_extraction_weight,
                                  sentence_classification_weight,
                                  distance_threshold,
                                  continue_prediction=True):
-    # Example: python .\map_cves_to_ttps.py annotate_dataset_with_Ladder --dataset_path ".\data\nexus_comparison_test_dataset_2\nexus_test.csv" --text_col "CVE_Description" --ground_truth_col "Adjusted_Labels_Whole_Report" --destination_dir ".\data\nexus_comparison_test_dataset_2\ladder_predictions\" -entity_extraction_weight "models/entity_ext.pt" --sentence_classification_weight "models/sent_cls.pt" --distance_threshold "0.6" --ignore_predictions_not_supported_by_ground_truth "True"
+    # Example: python .\map_cves_to_ttps.py annotate_dataset_with_Ladder --dataset_path ".\data\nexus_comparison_test_dataset_2\nexus_test.csv" --text_col "CVE_Description" --ground_truth_col "Adjusted_Labels_Whole_Report" --destination_dir ".\data\nexus_comparison_test_dataset_2\ladder_predictions\" -entity_extraction_weight "models/entity_ext.pt" --sentence_classification_weight "models/sent_cls.pt" --distance_threshold "0.6" --ignore_predictions_not_supported_by_ground_truth "True" --ignore_unsupported_labels "True"
     nltk.download('punkt')
     nltk.download('averaged_perceptron_tagger')
 
@@ -244,13 +245,12 @@ def annotate_dataset_with_Ladder(dataset_path,
     for ttp in dataset_total_labels:
         if ttp not in ladder_supported_ttps:
             # print(f"{ttp} does not exit in Ladder's TTP Dictionary")
-            raise Exception(f"{ttp} does not exit in Ladder's TTP Dictionary")
+            print(f"WARNING: {ttp} does not exit in Ladder's TTP Dictionary (It will be ignored)")
 
     # Set the destination file path
     ladder_dataset_path = os.path.join(destination_dir, 'ladder_prediction_results.csv')
 
     # Continue from previous covered CVEs
-    last_data_point_index = None
     if continue_prediction and Path(ladder_dataset_path).is_file():
         covered_cve_dataset = pd.read_csv(ladder_dataset_path)
         covered_report_ids = list(covered_cve_dataset.iloc[:, 0])
@@ -259,7 +259,7 @@ def annotate_dataset_with_Ladder(dataset_path,
             print(f"The latest processed report ID was: {covered_report_ids[-1]}")
 
     # Define Header
-    extended_dataset_header = ['Attack_Patterns', 'Ladder_predictions']
+    extended_dataset_header = ['Supported_Ground_truth_Ladder', 'Attack_Patterns', 'Ladder_predictions']
     current_dataset_header.extend(extended_dataset_header)
     extended_dataset_header = current_dataset_header
 
@@ -278,6 +278,18 @@ def annotate_dataset_with_Ladder(dataset_path,
         if continue_prediction and covered_report_ids:
             if row[0] in covered_report_ids:
                 continue
+
+        ground_truth = ast.literal_eval(row[ground_truth_col])
+        new_ground_truth = []
+
+        if ignore_unsupported_labels:
+            for label in ground_truth:
+                if label in ladder_supported_ttps:
+                    new_ground_truth.append(label)
+        else:
+            new_ground_truth = ground_truth
+
+        row['Supported_Ground_truth_Ladder'] = str(new_ground_truth)
 
         # Extract attack patterns from the target text
         cve_desc = row[text_col]
